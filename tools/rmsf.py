@@ -2,7 +2,6 @@
 from .base import BaseCalculator
 
 import tqdm
-import numpy as np
 import pandas as pd
 import MDAnalysis as mda
 
@@ -86,4 +85,30 @@ class RMSFCalculator(BaseCalculator):
         if RMSFdict is not None:
             RMSFdict['RMSF'] = RMSFdict['RMSF'].values/len(trajfiles)
         return RMSFdict, trajRMSF
+
+    def cal_rmsf_MSM(self, topologyfile:str, stateSamples:str, population:list, selection='mass >2', mode='residue') -> pd.DataFrame:
+        """Calculate the root mean square fluctuation for multiple trajfile.
+
+        Args:
+            topologyfile (str): topology file for the trajectory
+            stateSamples (str): state sample trajectory files generated from makov state model.
+            population (list): markov state model population for each state.
+            selection (str, optional): atom index select to calculate the RMSF.. Defaults to 'mass>=2'.
+            mode (str, optional): calculation mode, atom or residue. Defaults to 'residue'.
+
+        Returns:
+            pd.DataFrame: [description]
+        """
+        stateRMSF = {}
+        RMSFdict = None
+        ProccessBar = tqdm.tqdm(stateSamples)
+        for i, stateSample in enumerate(ProccessBar):
+            ProccessBar.set_description("Process: %s " % stateSample)
+            stateRMSF[i] = self.cal_rmsf_xingle_traj(topologyfile, stateSample, selection, mode)
+            if RMSFdict is not None:
+                pi = populations[i]
+                RMSFdict['RMSF'] = RMSFdict['RMSF'].values + stateRMSF[i]['RMSF'].values * pi
+            else:
+                RMSFdict['RMSF'] = stateRMSF[i] * pi
+        return RMSFdict, stateRMSF
 

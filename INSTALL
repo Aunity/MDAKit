@@ -1,6 +1,6 @@
 conda create --name mdtools python=3.8
 conda activate mdtools
-pip install numpy mdtraj pandas mdanalysis
+pip install numpy mdtraj pandas mdanalysis pyemma
 conda install cython
 
 git clone https://github.com/msmbuilder/msmbuilder.git
