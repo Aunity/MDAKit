@@ -1,0 +1,98 @@
+#!/usr/bin/env python
+import os
+import sys
+import argparse
+
+import numpy as np
+import mdtraj as md
+
+from multiprocessing import Pool
+from numpy.linalg import norm
+from pakg import set_plt
+
+def efficiency(d, R0=51):
+
+    e  =  R0**6/(R0**6 + (d*10)**6)
+
+    return e
+
+def dist(args):
+    xtc,i,r1,r2 = args
+
+    #r1_Ca_index = xtc[i].top.select("residue %d and name CA"%r1)
+    #r2_Ca_index = xtc[i].top.select("residue %d and name CA"%r2)
+
+    # update at 2020-0507
+    r1_Ca_index = xtc[i].top.select(r1)
+    r2_Ca_index = xtc[i].top.select(r2)
+
+    r1_Ca       = xtc[i].atom_slice(r1_Ca_index).xyz[0,0,:]
+    r2_Ca       = xtc[i].atom_slice(r2_Ca_index).xyz[0,0,:]
+
+    d = np.sqrt(sum((r1_Ca - r2_Ca)**2))
+
+    return i,d
+def dist_v2(args):
+    xtc, i, r1, r2 = args
+    #Ca_index = xtc.top.select("(residue %d or residue %d) and name CA"%(r1, r2))
+    Ca_index = xtc.top.select("(%s) or (%s)"%(r1, r2))
+    dist = md.compute_distances(xtc, [Ca_index], periodic=True)
+
+    return dist
+
+def cal_single_xtc(xtcf,topf,r1,r2,outp,efc):
+    xtc = md.load_xtc(xtcf, topf)
+    name = os.path.split(xtcf)[-1][:-4]
+    ds = dist_v2((xtc,0,r1,r2))
+    if efc is not None:
+        es = efficiency(ds)
+        esf = os.path.join(outp, name+".efc")
+        np.savetxt(esf, es, fmt="%5.4f")
+    ds = np.array([[i,d] for i,d  in enumerate(ds)])
+    dsf = os.path.join(outp, name+".dist")
+    np.savetxt(dsf, ds, fmt="%5.4f")
+
+def main():
+    parser = argparse.ArgumentParser(description="Calculate the distance of two residues")
+    parser.add_argument('-i', dest='xtc',help='Xtc file to calc. If this is a pdb file, then calc for a pdb', required=True)
+    parser.add_argument('-o', dest='oup',help='Floder to save result. It is ok if no set',default=None)
+    parser.add_argument('-r1', dest='resid1', help='First Resid sel for calculating the distance', default="residue 46 and name CA")
+    parser.add_argument('-r2', dest='resid2', help='Second Resid sel for calculating the distance', default="residue 197 and name CA")
+    parser.add_argument('-t', dest='top',help='The topology file for the xtc, default=2fvy.pdb', default="/home/ymh/GGBP/2fvy.pdb")
+    parser.add_argument('-e', dest="efc",help="Translate the dist to efficiency.", action="store_false")
+    parser.add_argument('-T', dest='tlp',type=int, default=4,help='The number of threads to process this task')
+    parser.add_argument('-pic', help='If set then pic', action="store_false")
+
+    args =  parser.parse_args()
+    xtcf, topf, resid1, resid2, T, oup, pic, efc = args.xtc,args.top,args.resid1,args.resid2,args.tlp, args.oup, args.pic, args.efc
+
+    top = md.load_pdb(topf).top
+    atoms = top.select("(%s) or (%s)"%(resid1, resid2))
+    print('cal distance for: %s-%s\n'%(top.atom(atoms[0]), top.atom(atoms[1])))
+    if xtcf.endswith('.pdb'):
+        xtc = md.load_pdb(xtcf)
+        #_,d = dist((xtc,0,resid1,resid2))
+        d   = dist_v2((xtc,0,resid1,resid2))[0][0]
+        e   = efficiency(d)
+        print("\nDist %d to %d (atom Ca): \033[1;31;40m%.4f (nm)\033[0m Efficiency: \033[1;31;40m%.4f\033[0m \n"%(resid1, resid2, d, e))
+        sys.exit(0)
+    if not oup:
+        oup = "Ca-dist%dto%d"%(resid1, resid2)
+
+    if not os.path.exists(oup):
+        os.mkdir(oup)
+    oup = os.path.abspath(oup)
+    if os.path.isdir(xtcf):
+        for xtc in os.listdir(xtcf):
+            if xtc.endswith(".xtc"):
+                xtc = os.path.join(xtcf, xtc)
+                cal_single_xtc(xtc, topf, resid1, resid2, oup, efc)
+    else:
+        cal_single_xtc(xtcf,topf, resid1, resid2, oup,efc)
+
+    # plot histogram of dist
+    # plt = set_plt()
+    # fig, ax = 
+
+if __name__=="__main__":
+    main()

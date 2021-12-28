@@ -1,0 +1,80 @@
+#!/home/ymh/anaconda3/bin/python
+import os
+import sys
+
+import tempfile
+import argparse
+
+import numpy as np
+import pandas as pd
+
+from glob import glob
+from collections import defaultdict
+from subprocess import Popen, PIPE
+
+def main():
+    parser = argparse.ArgumentParser(description="Calc dist for msm")
+    parser.add_argument("-i", dest='inp', help="The msm xtc sample file path.", required=True)
+    parser.add_argument("-m", dest='msm', help="Markov pikle data path. M.pikle", default="M.pikle")
+    parser.add_argument("-t", dest='top', help="The top file for the xtc file, defualt=/home/ymh/GGBP/2fvy.pdb",default='/home/ymh/GGBP/2fvy.pdb')
+    parser.add_argument("-o", dest='ouf', help="Result txt file to save result.", default="DISTmsm.txt")
+    parser.add_argument("-res",dest='residue', help="Two residue for calc, default: 46 197", default=[46,197], nargs=2)
+    parser.add_argument('-size', help="Parameters for lrdc, default:15", default='15')
+
+    args = parser.parse_args()
+
+    inp, msm, outf, topf, res = args.inp, args.msm, args.ouf, args.top, args.residue
+
+    M       = pd.read_pickle(msm)
+    if hasattr(M, 'nstates'):
+        n_state = M.nstates
+        P = M.stationary_distribution
+        xtcfs   = sorted([os.path.join(inp, _) for _ in os.listdir(inp) if _.endswith(".xtc")])
+    else:
+        n_state = M.n_states_
+        P       = M.populations_
+        #xtcfs   = [os.path.join(inp, "%d.xtc"%i) for i in range(len(P))]
+        xtcfs   = sorted([os.path.join(inp, _) for _ in os.listdir(inp) if _.endswith(".xtc")])
+
+    weight = []
+    #if not os.path.exists(oup):
+    #    os.mkdir(oup)
+    #print(xtcfs)
+    #exit(0)
+    tmpdir = tempfile.mkdtemp()
+    ds     = []
+    es     = []
+
+    for i,p in enumerate(P):
+        tmpout = os.path.join(tmpdir,str(i))
+        xtcf = xtcfs[i]
+
+        cmd    = "calDIST -i %s -r1 'residue %s and name CA' -r2 'residue %s and name CA' -t %s -o %s -e"%(xtcf, res[0], res[1], topf, tmpout)
+        print(cmd)
+        pipe   = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE)
+        o,e    = pipe.communicate()
+        if e:
+            raise Exception("Error cal rdc for %s. Please check your file.\nError:\n%s"%(xtcf, e))
+            sys.exit(1)
+
+        d      = np.loadtxt(glob(os.path.join(tmpout, "*.dist"))[0])
+        e      = np.loadtxt(glob(os.path.join(tmpout, "*.efc"))[0])
+        ds.extend(d[:,1].tolist())
+        es.extend(e[:].tolist())
+        weight.extend([p]*len(d))
+
+        sys.stdout.write("Finished job %s, job state:%d/%d\r"%(xtcf,i+1,n_state))
+        sys.stdout.flush()
+
+    #pwd = os.getcwd()
+    #os.chdir(oup)
+    df = pd.DataFrame({'dist':ds,'efc':es,'weight':weight})
+    df.to_csv(outf,sep=" ",index=False)
+    #pd.to_pickle(ds,'Ca-dist-msm.pickl')
+    #pd.to_pickle(es, "Ca-dist-msm-efc.pickl")
+    #pd.to_pickle(weight,"weight.pickl")
+
+    #os.chdir(pwd)
+
+if __name__ == "__main__":
+    main()

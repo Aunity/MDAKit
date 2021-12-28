@@ -1,0 +1,348 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# @Date    : 2018-08-22 16:18:35
+# @Author  : Maohua Yang (MaohuaY@hotmail.com)
+# @Link    : https://github.com/Aunity
+# @Version : V3
+
+
+import os
+import sys
+import re
+import time
+import argparse
+import multiprocessing
+
+import pandas as pd
+from queue import Queue as Q
+import subprocess as sub
+import matplotlib as mpl
+mpl.use('Agg')
+import matplotlib.pyplot as plt
+
+#from ggplot import *
+from numpy import array
+from multiprocessing import Pool
+
+def get_args():
+    '''
+    #def group number
+        oN = 1   #output number, default is protein
+        cN = 1   #center number, default is protein
+        fitN = 3   #fit number, default is C-alpha
+        rN = 3   #rmsd number, default is C-alpha
+        fN = 3   #rmsf number, default is C-alpha
+        #def index file
+        INDEX = "index.ndx"
+        #configure file
+        TPR = None
+        XTC = None
+    '''
+    parser = argparse.ArgumentParser(description='This is a programm used for calculate the rmsd and rmsf result.(GROMACS)')
+    parser.add_argument('-i', dest='inp', required=True, help='The path contains gromacs result floders.')
+    parser.add_argument('-o', dest='oup', help="Result path to save the xtc files. Default:./xtc", default='./xtc')
+    parser.add_argument('-tpr', dest='tpr', help="The tpr file for the gmx trajconv. Default: search", default=None)
+    parser.add_argument('-xtc', dest='xtc', help="the xtc file for the gmx trjconv. default: search", default=None)
+    parser.add_argument('-ftype', dest='ftype', help="File type to deal with. xtc or trr", default="xtc")
+    parser.add_argument('-index', dest='index', help="The index file for gmx trajconv. Default:index.ndx", default='index.ndx')
+    parser.add_argument('-oN', help='output group number',type=int, default=1)
+    parser.add_argument('-cN', help='center group number',type=int, default=1)
+    parser.add_argument('-fitN', help='fit group number',type=int, default=3)
+    parser.add_argument('-rN', help="rmsd output group number",type=int, default=3)
+    parser.add_argument('-fN',help="rmsf output group number",type=int, default=3)
+
+    parser.add_argument('-T', dest='threads', help="Number of thread to run this program. Default:1", type=int,default=1)
+    parser.add_argument('-noC', dest='check', help="Redo the job if ture", action="store_false", default=False)
+
+    args = parser.parse_args()
+
+    return args.inp, args.oup, args.threads, args.check, args
+
+def load_xvg(xvgfile,name,rmsd=False):
+    '''
+    While use the gromacs to calculate the rmsd and rmsf, you will get a *.xvg file. This func is used to load xvg file's data.
+    Parameters:
+      INPUT:
+        xvgfile     -The path of the *.xvg file.
+        name        -The name of this file.
+        rmsd        -Type of the file, rmsd result or rmsf result(default if False).
+      OUTPUT:
+        pd          -DataFrame of Pandas, two rows(x and y, x is the timestep or atomid, y is the value of rmsd or rmsf)
+        xvg         -Dict of the information about this file
+    '''
+    if not os.path.exists(xvgfile):
+        raise Exception("Error: Can't find the xvg file! Please check it:%s"%xvgfile)
+
+    fr = open(xvgfile)
+    xvg = {'title':'','xaxis':'','yaxis':'','x':[],'y':[]}
+    residue = 1
+    for line in fr:
+        if line.startswith("#"):
+            continue
+        elif line.startswith('@'):
+            if 'title' in line:
+                pat_ti = re.compile('@.*?title "(.*?)".*?',re.S)
+                xvg['title'] = "%s %s"%(name,re.search(pat_ti,line).group(1))
+
+            elif 'xaxis' in line:
+                pat_ti = re.compile('@.*?"(.*?)".*?',re.S)
+                xvg['xaxis'] = re.search(pat_ti,line).group(1)
+
+            elif 'yaxis' in line:
+                pat_ti = re.compile('@.*?"(.*?)".*?',re.S)
+                xvg['yaxis'] = re.search(pat_ti,line).group(1)
+        else:
+            temp = line.strip().split()
+            if rmsd:
+                xvg['x'].append(temp[0])
+            else:
+                xvg['x'].append(residue);residue+=1
+            xvg['y'].append(temp[1])
+    d = {'x':pd.Series(xvg['x'],name=xvg['xaxis'],dtype='float64'),
+         'y':pd.Series(xvg['y'],name=xvg['yaxis'],dtype='float64')
+        }
+    df = pd.DataFrame(d)
+
+    return df,xvg
+
+def plot_xvg(p):
+    '''
+    This function is used to plot the rmsd and rmsf result.It'll find the rmsd and rmsf xvg files and create two jpg file in the floder.
+    Parameters:
+      INPUT:
+        p    -A nametuple data, contains two attributes(f and name, f is the path of the result floder, name is the floder's name)
+      OUTPUT:
+        None
+    '''
+    f,name = p.f,p.name
+    """RMSD"""
+    path = os.path.join(f,"rmsd.xvg")
+    df,xvg = load_xvg(path,name,rmsd=True)
+    p= ggplot(aes(x='x', y='y'),data=df) 
+    q= p+geom_line(color='red')+xlab(xvg['xaxis']) + ylab("RMSD(nm)") + ggtitle(xvg['title'])
+    q.save(os.path.join(f,'rmsd.jpg'))
+
+    """RMSF"""
+    path = os.path.join(f,"rmsf.xvg")
+    df,xvg = load_xvg(path,name)
+    p= ggplot(aes(x='x', y='y'),data=df) 
+    q= p+geom_line()+xlab("Residue") + ylab("RMSF(nm)") + ggtitle(xvg['title'])+geom_point()
+    q.save(os.path.join(f,'rmsf.jpg'))
+
+def _check(path,argvs):
+    '''
+    Check the floder and find the *md.xtc and *md.tpr file. And if the floder contains the continue files, it'll concat the xtc file.
+    Parameters:
+      INPUT:
+        path    -The floder path.
+      OUTPUT:
+        xtc     -The xtc file's path.
+        tpr     -The tpr file's path.
+    '''
+    #XTC_pa = r'*md.xtc$'
+    #TPR_pa = r'*md.tpr$'
+    XTC_pa = r'md-.*\.xtc$'
+    TPR_pa = r'md-.*\.tpr$'
+    XTC, TPR = argvs.xtc, argvs.tpr 
+    if not XTC:
+        p = sub.Popen("ls %s|grep -E %s"%(path,XTC_pa), shell=True, stderr=sub.PIPE, stdout=sub.PIPE)
+        o,e = p.communicate()
+        print(o,e)
+        if o:
+            xtc = o.strip().decode('utf-8')
+        else:
+            print(path)
+            raise Exception('Not find xtc, make sure xtc file like *md.xtc')
+    else:
+        xtc = XTC
+    ftype = argvs.ftype
+    if not TPR:
+        p = sub.Popen("ls %s|grep -E %s"%(path,TPR_pa), shell=True, stderr=sub.PIPE, stdout=sub.PIPE)
+        o,e = p.communicate()
+        if o:
+            tpr = o.strip().decode('utf-8')
+        else:
+            print(path)
+            raise Exception('Not find tpr, make sure tpr file like *md.tpr')
+    else:
+        tpr = TPR
+    patten = re.compile('continue\d?.xtc')
+    contxtcs = [os.path.join(path, _) for _ in os.listdir(path) if patten.match(_)]
+    outxtc = os.path.join(path,"const.xtc")
+    if contxtcs:
+        if not os.path.exists(outxtc):
+            p = sub.Popen('gmx trjcat -f %s %s -o %s'%(os.path.join(path,xtc.replace(".trr",'.xtc'))," ".join(contxtcs),outxtc), shell=True)
+            p.communicate()
+            contxtcs = [_.replace('.xtc','.trr') for _ in contxtcs]
+            p = sub.Popen('gmx trjcat -f %s %s -o %s'%(os.path.join(path,xtc.replace('.xtc','.trr'))," ".join(contxtcs),outxtc.replace('.xtc','.trr')), shell=True)
+        if ftype == 'trr':
+            xtc = 'const.trr'
+        else:
+            xtc = 'const.xtc'
+    print(tpr,xtc)
+    return xtc,tpr
+
+def do_noPBC(file_dir,name,check,argvs):
+    print("\n\n\n----------------%s---------------"%name)
+    print("\n######01  deal with PBC  #######")
+    xtc,tpr = _check(file_dir,argvs)
+    if os.path.exists(os.path.join(file_dir,argvs.index)):
+        pass 
+    cmd = "echo -e '%d\n' | gmx trjconv -s %s -f %s -o %s -pbc mol -ur compact -n %s"%(argvs.oN,\
+          os.path.join(file_dir,tpr),os.path.join(file_dir,xtc),
+          os.path.join(file_dir,'md_noPBC.xtc'),
+          argvs.index)
+    print(cmd)
+
+    if os.path.exists(os.path.join(file_dir,'md_noPBC.xtc')) and not check:
+        p = sub.Popen('ls',shell=True,stderr=sub.PIPE,stdout=sub.PIPE)
+        p.xtc = xtc
+        print(xtc)
+        p.tpr = tpr
+        p.f = file_dir
+        p.name = name
+        p.argvs= argvs
+        return p
+    if os.path.exists(os.path.join(file_dir,argvs.index)):
+        pass 
+    p = sub.Popen(cmd, shell=True, stdout=sub.PIPE, stderr=sub.PIPE)
+    p.f = file_dir
+    p.name = name
+    p.xtc = xtc
+    p.tpr = tpr
+    p.argvs= argvs
+    return p
+
+def do_center(p):
+    print("\n######02 deal with center #######")
+    file_dir, name, xtc, tpr, argvs = p.f, p.name, p.xtc, p.tpr, p.argvs
+    cmd = "echo -e '%d\n%d\n' | gmx trjconv -s %s -f %s -o %s -center -n %s"%(      argvs.cN, argvs.oN,\
+           os.path.join(file_dir,tpr),os.path.join(file_dir,'md_noPBC.xtc'),
+           os.path.join(file_dir,'md_noPBC-2.xtc'),
+           argvs.index)
+    print(cmd)
+    if os.path.exists(os.path.join(file_dir,'md_noPBC-2.xtc')) and not p.check:
+        return os.path.join(file_dir,'md_noPBC-2.xtc')
+    p = sub.Popen(cmd, shell=True, stdout=sub.PIPE, stderr=sub.PIPE)
+    p.communicate()
+    
+    return os.path.join(file_dir,'md_noPBC-2.xtc')
+
+def do_step3_4(p, inpf, step=3, dtype="mol"):
+    print("\n######%d  deal with PBC (%s) #######"%(step,dtype))
+    file_dir, name, xtc, tpr, argvs = p.f, p.name, p.xtc, p.tpr, p.argvs
+
+    outp = os.path.join(file_dir,'md_noPBC-%d.xtc'%step)
+    cmd = "echo -e '%d\n' | gmx trjconv -s %s -f %s -o %s -pbc %s -ur compact -n %s"%(argvs.oN,\
+          os.path.join(file_dir,tpr),inpf,
+          os.path.join(file_dir,'md_noPBC-%d.xtc'%step),
+          dtype, argvs.index)
+    print(cmd)
+    if os.path.exists(outp) and not p.check:
+        return outp
+    p = sub.Popen(cmd, shell=True, stdout=sub.PIPE, stderr=sub.PIPE)
+    p.communicate()
+    return os.path.join(file_dir,'md_noPBC-%d.xtc'%step)
+
+def do_fit(p, inpf):
+    print("\n######05 deal with fit #######")
+    file_dir, name, xtc, tpr, argvs = p.f, p.name, p.xtc, p.tpr, p.argvs
+    cmd = "echo -e '%d\n%d\n' | gmx trjconv -s %s -f %s -fit rot+trans -o %s -n %s"%( argvs.fitN, argvs.oN,\
+           os.path.join(file_dir,tpr),inpf,
+           os.path.join(file_dir,'%s_ft_noPBC.xtc'%name),
+           argvs.index)
+    print(cmd)
+    if os.path.exists(os.path.join(file_dir,'%s_ft_noPBC.xtc'%name)) and not p.check:
+        return os.path.join(file_dir,'%s_ft_noPBC.xtc'%name)
+    p = sub.Popen(cmd, shell=True, stdout=sub.PIPE, stderr=sub.PIPE)
+    p.communicate()
+    
+    return os.path.join(file_dir,'%s_ft_noPBC.xtc'%name)
+
+def cal_RMSD(p, inpf):
+    print("\n######    cal  RMSD    #######")
+    f,name,tpr, argvs = p.f,p.name,p.tpr,p.argvs
+    if os.path.exists(os.path.join(f,'rmsd.xvg')) and p.check:
+        return
+    cmd = "echo -e '%d\n%d\n' | gmx rms -s %s -f %s -o %s"%(\
+           argvs.fitN,argvs.rN,
+           os.path.join(f,tpr),inpf,
+           os.path.join(f,'rmsd.xvg'))
+    p = sub.Popen(cmd, shell=True, stdout=sub.PIPE, stderr=sub.PIPE)
+    p.communicate()
+    print(cmd)
+
+def cal_RMSF(p,inpf):
+    print("\n######    cal rmsf     #######")
+    f,name,tpr,argvs = p.f,p.name,p.tpr,p.argvs
+    if os.path.exists(os.path.join(f,'rmsf.xvg')) and p.check:
+        return
+    cmd = "echo -e '%d\n' | gmx rmsf -s %s -f %s -o %s"%(\
+           argvs.fN,
+           os.path.join(f,tpr),
+           inpf,
+           os.path.join(f,'rmsf.xvg'))
+    p = sub.Popen(cmd, shell=True, stdout=sub.PIPE, stderr=sub.PIPE)
+    p.communicate()
+    print(cmd)
+
+def copy_xtc(p,f2):
+    print("\n######    copy file    #######")
+    f,name = p.f,p.name
+    name = '%s_ft_noPBC.xtc'%name
+    temp = os.path.join(f2,name)
+    if os.path.exists(temp):
+        return
+    cmd = "cp %s %s"%(os.path.join(f,name),f2)
+    p = sub.Popen(cmd, shell=True, stdout=sub.PIPE, stderr=sub.PIPE)
+    p.communicate()
+
+def func(args):
+    jobDir,xtcDir,jobName,check,argvs,donedir = args
+
+    p = do_noPBC(jobDir, jobName, check, argvs)
+    p.communicate()
+    job = p
+    job.check = check
+    centoutf = do_center(job)
+    resoutf  = do_step3_4(job, centoutf, step=3, dtype="res")
+    moloutf  = do_step3_4(job, resoutf, step=4, dtype="mol")
+    fitoutf  = do_fit(job, moloutf)
+    #cal_RMSD(job, fitoutf)
+    #cal_RMSF(job, fitoutf)
+    #plot_xvg(job)
+    os.system('rm %s/\\#* %s/md_noPBC*'%(job.f,job.f))
+    copy_xtc(job, xtcDir)
+    cmd = 'mv %s %s'%(jobDir, donedir)
+    os.system(cmd)
+
+def start(inp,oup,T,check,argvs):
+
+    jobDirs = []
+    jobNames = []
+    if not os.path.exists(oup):
+        os.mkdir(oup)
+    donedir = os.path.join(inp, 'done')
+    print(donedir)
+    if not os.path.exists(donedir):
+        os.mkdir(donedir)
+
+    for jobDir in os.listdir(inp):
+        if jobDir=='done':
+            continue
+        job = os.path.join(inp, jobDir)
+        if os.path.isdir(job):
+            jobDirs.append(job)
+            jobNames.append(jobDir)
+    args = [ (jobDir,oup,jobName,check,argvs, donedir) for jobDir,jobName in zip(jobDirs,jobNames)]
+    print(args)
+    #for i in args:
+    #    func(i)
+    P = Pool(T)
+    P.map(func,args)
+    cmd = "mv %s/* %s/"%(donedir, inp)
+    os.system(cmd)
+
+if __name__ == "__main__":
+    inp,oup,T,check,argvs = get_args() 
+    start(inp,oup,T,check,argvs)

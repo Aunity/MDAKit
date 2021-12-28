@@ -1,0 +1,38 @@
+#!/usr/bin/env python
+'''
+@Author ymh
+@Email  maohuay@hotmail.com
+@Date   2020-09-14 10:40:20
+@Web    https://github.com/Aunity
+'''
+
+import os
+import sys
+import warnings
+warnings.filterwarnings("ignore")
+import MDAnalysis as mda
+
+def main():
+    if len(sys.argv[1:]) != 2:
+        print('Usage:python %s <xtcfloder> <topf>'%sys.argv[0])
+        sys.exit(0)
+    xtcp, topf = sys.argv[1:]
+    nframes = 0
+    totaltime = 0
+    for fname in os.listdir(xtcp):
+        if fname.startswith('.'):
+            continue
+        f = os.path.join(xtcp, fname)
+        u = mda.Universe(os.path.abspath(topf), os.path.abspath(f))
+        ts = u.trajectory
+        nframes += ts.n_frames
+        totaltime += ts.totaltime
+
+    print("Number of frames: %d"%nframes)
+    print("Time step: %.2f (%s)"%(ts.dt, ts.units['time']))
+    print("Total time: %.2f (%s)"%(totaltime,ts.units['time']))
+    print("Number of atoms: %d"%ts.n_atoms)
+    print("Cell information:")
+    print("                ", ts.ts.dimensions)
+if __name__ == '__main__':
+    main()

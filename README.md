@@ -1,12 +1,17 @@
-# MD-pytools
-Python script tools for molecular dynamic simulation and some material about MD
----
+usage: mdtools [-h] {DSSP,RMSF,Rg,XTC2PDB,PDB2XTC,catTraj,HB,HBComp} ...
 
-### [tools](https://github.com/Aunity/MD-pytools/tree/master/tools)
-  * [xtc2pdbs](https://github.com/Aunity/MD-pytools/blob/master/tools/xtc2pdbs)      Convert a trajectory file to single pdb files.
-  * [pdb2seq](https://github.com/Aunity/MD-pytools/blob/master/tools/pdb2seq)        Convert a pdb file to one-letter sequence
-  * [hydrogen_bond](https://github.com/Aunity/MD-pytools/blob/master/tools/hydrogen_bond) Analysis hydrogen bond tools
-  * [catXTC](https://github.com/Aunity/MD-pytools/blob/master/tools/catXTC)          it concatenates XTC files into a single XTC file.
+MD tools kits
 
-### [MD_src](https://github.com/Aunity/MD-pytools/tree/master/MD_src)
-  * [mdp-files](https://github.com/Aunity/MD-pytools/tree/master/MD_src/mdp-files)
+positional arguments:
+  {DSSP,RMSF,Rg,XTC2PDB,PDB2XTC,catTraj,HB,HBComp}
+    DSSP                Calculate the secondary information.
+    RMSF                Calculate the RMSF value.
+    Rg                  Calculate the Residue gyration value for ensemble.
+    XTC2PDB             Convert single trajectory file to multiple PDB file.
+    PDB2XTC             Convert multiple PDB files to single trajectory file.
+    catTraj             Read the trajectory file and obtain the information.
+    HB                  Calculate the hydrogen bond information.
+    HBComp              Compare two msm ensemble hydrogen bond. h1 - h2
+
+optional arguments:
+  -h, --help            show this help message and exit
