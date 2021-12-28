@@ -1,3 +1,4 @@
+```Bash
 usage: mdtools [-h] {DSSP,RMSF,Rg,XTC2PDB,PDB2XTC,catTraj,HB,HBComp} ...
 
 MD tools kits
